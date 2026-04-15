@@ -3,10 +3,9 @@ let activeTabId = null;
 let stopTimeout = null;
 
 // Server URL Configuration
-// For local development: "http://localhost:3456"
-// For Vercel deployment: Update this to your Vercel URL after deployment
-// Example: "https://meet-assistant-abc123.vercel.app"
-const SERVER_URL = "http://localhost:3456";
+// Production (Vercel): https://meet-asistant.vercel.app
+// Local development: http://localhost:3456
+const SERVER_URL = "https://meet-asistant.vercel.app";
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message.action === "getStatus") {
