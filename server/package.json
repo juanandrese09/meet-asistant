@@ -1,0 +1,13 @@
+{
+  "name": "meet-assistant-server",
+  "version": "1.0.0",
+  "description": "Local server for Meet Assistant - transcribes and summarizes meetings",
+  "type": "module",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node --watch server.js"
+  },
+  "dependencies": {
+    "openai": "^4.78.0"
+  }
+}

@@ -1,0 +1,13 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "Meet Assistant Server",
+      "runtimeExecutable": "node",
+      "runtimeArgs": ["--watch", "server.js"],
+      "port": 3456,
+      "autoPort": false,
+      "cwd": "server"
+    }
+  ]
+}

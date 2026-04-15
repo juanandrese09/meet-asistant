@@ -1,0 +1,90 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      width: 340px;
+      padding: 20px;
+      font-family: Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      background: linear-gradient(180deg,#071226 0%, #0f172a 100%);
+      color: #e6f6f9;
+    }
+    h1 {
+      font-size: 16px;
+      font-weight: 600;
+      margin-bottom: 16px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    h1 .dot { width: 10px; height: 10px; border-radius: 50%; background: #06b6d4; box-shadow:0 0 8px #06b6d4; }
+    h1 .dot.recording { background: #ef4444; animation: pulse 1s infinite; box-shadow:0 0 8px #ef4444; }
+    @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.3; } }
+
+    .status {
+      font-size: 13px;
+      color: #999;
+      margin-bottom: 16px;
+    }
+    .status.active { color: #f87171; }
+
+    button {
+      width: 100%;
+      padding: 12px;
+      border: none;
+      border-radius: 8px;
+      font-size: 14px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: all 0.2s;
+    }
+    #recordBtn {
+      background: linear-gradient(90deg,#06b6d4,#3b82f6);
+      color: #042029;
+      box-shadow: 0 6px 18px rgba(6,182,212,0.12);
+    }
+    #recordBtn:hover { background: #22c55e; }
+    #recordBtn.recording {
+      background: #ef4444;
+      color: white;
+    }
+    #recordBtn.recording:hover { background: #dc2626; }
+    #recordBtn:disabled {
+      background: #555;
+      color: #999;
+      cursor: not-allowed;
+    }
+
+    .info {
+      margin-top: 12px;
+      font-size: 11px;
+      color: #666;
+      text-align: center;
+    }
+
+    .result {
+      margin-top: 12px;
+      padding: 10px;
+      background: #16213e;
+      border-radius: 6px;
+      font-size: 12px;
+      display: none;
+    }
+    .result.show { display: block; }
+    .result .label { color: #06b6d4; font-weight: 600; margin-bottom: 4px; }
+  </style>
+</head>
+<body>
+  <h1><span class="dot" id="statusDot"></span> Meet Assistant</h1>
+  <p class="status" id="statusText">Listo para grabar</p>
+  <button id="recordBtn">Iniciar grabacion</button>
+  <div class="result" id="result">
+    <div class="label">Procesando...</div>
+    <div id="resultText"></div>
+  </div>
+  <p class="info">Asegurate de estar en una tab de Google Meet</p>
+  <script src="popup.js"></script>
+</body>
+</html>
