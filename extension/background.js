@@ -95,7 +95,7 @@ async function handleStopRecording() {
     chrome.runtime.sendMessage({ action: "offscreen-stop" });
 
     // Timeout (will be cleared when the offscreen response arrives)
-    const stopTimeout = setTimeout(() => {
+    stopTimeout = setTimeout(() => {
       chrome.runtime.onMessage.removeListener(listener);
       recording = false;
       chrome.action.setBadgeText({ text: "" });

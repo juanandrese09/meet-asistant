@@ -52,6 +52,7 @@ function stopRecording() {
 
   mediaRecorder.onstop = async () => {
     const blob = new Blob(recordedChunks, { type: "audio/webm" });
+    const stream = mediaRecorder.stream;
 
     // Convert to base64
     const reader = new FileReader();
@@ -61,19 +62,24 @@ function stopRecording() {
         action: "offscreen-stopped",
         audioBase64: base64,
       });
+
+      // Stop all tracks after sending message
+      stream.getTracks().forEach((t) => t.stop());
+      mediaRecorder = null;
+      recordedChunks = [];
     };
     reader.onerror = () => {
       chrome.runtime.sendMessage({
         action: "offscreen-stopped",
         audioBase64: null,
       });
+
+      // Stop all tracks on error too
+      stream.getTracks().forEach((t) => t.stop());
+      mediaRecorder = null;
+      recordedChunks = [];
     };
     reader.readAsDataURL(blob);
-
-    // Stop all tracks
-    mediaRecorder.stream.getTracks().forEach((t) => t.stop());
-    mediaRecorder = null;
-    recordedChunks = [];
   };
 
   mediaRecorder.stop();
