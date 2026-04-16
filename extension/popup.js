@@ -1,10 +1,18 @@
 const btn = document.getElementById("recordBtn");
+const dashboardBtn = document.getElementById("dashboardBtn");
 const statusText = document.getElementById("statusText");
 const statusDot = document.getElementById("statusDot");
 const resultDiv = document.getElementById("result");
 const resultText = document.getElementById("resultText");
 
 let isRecording = false;
+
+// Dashboard button
+dashboardBtn.addEventListener("click", () => {
+  chrome.tabs.create({
+    url: "https://meet-asistant.vercel.app/dashboard",
+  });
+});
 
 // Check current state on popup open
 chrome.runtime.sendMessage({ action: "getStatus" }, (response) => {

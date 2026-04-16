@@ -57,6 +57,14 @@
       cursor: not-allowed;
     }
 
+    #dashboardBtn {
+      background: linear-gradient(90deg,#22c55e,#16a34a);
+      color: white;
+      margin-top: 10px;
+      box-shadow: 0 6px 18px rgba(34,197,94,0.12);
+    }
+    #dashboardBtn:hover { background: linear-gradient(90deg,#16a34a,#15803d); }
+
     .info {
       margin-top: 12px;
       font-size: 11px;
@@ -80,6 +88,7 @@
   <h1><span class="dot" id="statusDot"></span> Meet Assistant</h1>
   <p class="status" id="statusText">Listo para grabar</p>
   <button id="recordBtn">Iniciar grabacion</button>
+  <button id="dashboardBtn">📊 Ir a Dashboard</button>
   <div class="result" id="result">
     <div class="label">Procesando...</div>
     <div id="resultText"></div>
