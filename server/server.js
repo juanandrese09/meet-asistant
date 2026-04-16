@@ -2,25 +2,98 @@ import { createServer } from "node:http";
 import { writeFile, readFile, mkdir, readdir } from "node:fs/promises";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import { execSync } from "node:child_process";
 import OpenAI from "openai";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-// On Vercel, only /tmp is writable; locally use the server/transcriptions folder
-const TRANSCRIPTIONS_DIR = process.env.VERCEL
-  ? "/tmp/transcriptions"
-  : join(__dirname, "transcriptions");
+const IS_VERCEL = !!process.env.VERCEL;
+const LOCAL_TRANSCRIPTIONS_DIR = join(__dirname, "transcriptions");
 const PORT = process.env.PORT || 3456;
 
 // Ensure OPENAI_API_KEY is set
 if (!process.env.OPENAI_API_KEY) {
-  throw new Error("OPENAI_API_KEY environment variable is required. Set it in your .env file or Vercel environment variables.");
+  throw new Error(
+    "OPENAI_API_KEY environment variable is required. Set it in your .env file or Vercel environment variables."
+  );
 }
 
 const openai = new OpenAI();
 
-// Ensure transcriptions directory exists
-await mkdir(TRANSCRIPTIONS_DIR, { recursive: true });
+// Local: ensure transcriptions directory exists
+if (!IS_VERCEL) {
+  await mkdir(LOCAL_TRANSCRIPTIONS_DIR, { recursive: true });
+}
+
+// ─────────────────────────────────────────
+//  Storage abstraction
+//  Vercel → @vercel/blob (persistent)
+//  Local  → filesystem
+// ─────────────────────────────────────────
+
+async function storageSave(filename, content) {
+  if (IS_VERCEL) {
+    const { put } = await import("@vercel/blob");
+    const blob = await put(`transcriptions/${filename}`, content, {
+      access: "public",
+      addRandomSuffix: false,
+    });
+    return blob.url;
+  }
+  const path = join(LOCAL_TRANSCRIPTIONS_DIR, filename);
+  await writeFile(path, content);
+  return path;
+}
+
+async function storageRead(filename) {
+  if (IS_VERCEL) {
+    const { list } = await import("@vercel/blob");
+    const { blobs } = await list({ prefix: `transcriptions/${filename}` });
+    const blob = blobs.find((b) => b.pathname === `transcriptions/${filename}`);
+    if (!blob) throw new Error(`File not found: ${filename}`);
+    const res = await fetch(blob.url);
+    if (!res.ok) throw new Error(`Failed to fetch blob: ${filename}`);
+    return await res.text();
+  }
+  return await readFile(join(LOCAL_TRANSCRIPTIONS_DIR, filename), "utf-8");
+}
+
+async function storageReadBuffer(filename) {
+  if (IS_VERCEL) {
+    const { list } = await import("@vercel/blob");
+    const { blobs } = await list({ prefix: `transcriptions/${filename}` });
+    const blob = blobs.find((b) => b.pathname === `transcriptions/${filename}`);
+    if (!blob) throw new Error(`File not found: ${filename}`);
+    const res = await fetch(blob.url);
+    if (!res.ok) throw new Error(`Failed to fetch blob: ${filename}`);
+    return Buffer.from(await res.arrayBuffer());
+  }
+  return await readFile(join(LOCAL_TRANSCRIPTIONS_DIR, filename));
+}
+
+async function storageList(suffix) {
+  if (IS_VERCEL) {
+    const { list } = await import("@vercel/blob");
+    let allBlobs = [];
+    let cursor;
+    do {
+      const result = await list({
+        prefix: "transcriptions/",
+        limit: 100,
+        cursor,
+      });
+      allBlobs = allBlobs.concat(result.blobs);
+      cursor = result.cursor;
+    } while (cursor);
+    return allBlobs
+      .filter((b) => b.pathname.endsWith(suffix))
+      .map((b) => b.pathname.replace("transcriptions/", ""));
+  }
+  const files = await readdir(LOCAL_TRANSCRIPTIONS_DIR);
+  return files.filter((f) => f.endsWith(suffix));
+}
+
+// ─────────────────────────────────────────
+//  CORS helpers
+// ─────────────────────────────────────────
 
 function corsHeaders() {
   return {
@@ -35,17 +108,18 @@ function jsonResponse(res, data, status = 200) {
   res.end(JSON.stringify(data));
 }
 
-async function transcribeAudio(audioBuffer) {
-  // Whisper API expects a file-like object
-  const file = new File([audioBuffer], "meeting.webm", { type: "audio/webm" });
+// ─────────────────────────────────────────
+//  AI helpers
+// ─────────────────────────────────────────
 
+async function transcribeAudio(audioBuffer) {
+  const file = new File([audioBuffer], "meeting.webm", { type: "audio/webm" });
   const transcription = await openai.audio.transcriptions.create({
     model: "whisper-1",
     file,
     language: "es",
     response_format: "verbose_json",
   });
-
   return transcription;
 }
 
@@ -72,9 +146,12 @@ ${transcript}`,
       },
     ],
   });
-
   return response.choices[0].message.content;
 }
+
+// ─────────────────────────────────────────
+//  Route handlers
+// ─────────────────────────────────────────
 
 async function handleTranscribe(req, res) {
   let body = "";
@@ -87,12 +164,15 @@ async function handleTranscribe(req, res) {
     return;
   }
 
-  // Decode base64 audio
   const audioBuffer = Buffer.from(audio, "base64");
   console.log(`Audio received: ${audioBuffer.length} bytes`);
 
   if (audioBuffer.length < 1000) {
-    jsonResponse(res, { error: `Audio muy corto (${audioBuffer.length} bytes) — puede que no se haya grabado audio` }, 400);
+    jsonResponse(
+      res,
+      { error: `Audio muy corto (${audioBuffer.length} bytes) — puede que no se haya grabado audio` },
+      400
+    );
     return;
   }
 
@@ -103,9 +183,8 @@ async function handleTranscribe(req, res) {
   const baseName = `meeting-${dateStr}`;
 
   // Save raw audio
-  const audioPath = join(TRANSCRIPTIONS_DIR, `${baseName}.webm`);
-  await writeFile(audioPath, audioBuffer);
-  console.log(`Audio saved: ${audioPath}`);
+  await storageSave(`${baseName}.webm`, audioBuffer);
+  console.log(`Audio saved: ${baseName}.webm`);
 
   // Transcribe with Whisper
   console.log("Transcribing with Whisper...");
@@ -121,9 +200,8 @@ async function handleTranscribe(req, res) {
   }
 
   // Save transcript
-  const transcriptPath = join(TRANSCRIPTIONS_DIR, `${baseName}.txt`);
-  await writeFile(transcriptPath, transcriptText);
-  console.log(`Transcript saved: ${transcriptPath}`);
+  await storageSave(`${baseName}.txt`, transcriptText);
+  console.log(`Transcript saved: ${baseName}.txt`);
 
   // Summarize with GPT-4o-mini
   let summary = "";
@@ -137,8 +215,7 @@ async function handleTranscribe(req, res) {
     }
   }
 
-  // Save summary
-  const summaryPath = join(TRANSCRIPTIONS_DIR, `${baseName}-summary.md`);
+  // Build and save full summary document
   const fullDoc = `# Reunion ${new Date(timestamp || Date.now()).toLocaleString("es-MX")}
 
 ## Resumen generado por AI
@@ -151,64 +228,63 @@ ${summary}
 
 ${transcriptText}
 `;
-  await writeFile(summaryPath, fullDoc);
-  console.log(`Summary saved: ${summaryPath}`);
+  await storageSave(`${baseName}-summary.md`, fullDoc);
+  console.log(`Summary saved: ${baseName}-summary.md`);
 
-  // Also save structured insights as JSON to make dashboard rendering reliable
+  // Save structured insights JSON for reliable dashboard rendering
   try {
     const extractList = (text) => {
       if (!text) return [];
-      return text.split(/\n/).map(l=>l.replace(/^[-*\d\.\)\s]+/,'').trim()).filter(Boolean);
+      return text
+        .split(/\n/)
+        .map((l) => l.replace(/^[-*\d.\)\s]+/, "").trim())
+        .filter(Boolean);
     };
 
     const getSection = (heading) => {
-      const re = new RegExp(`##\\s+${heading}\\s*\\n([\s\S]*?)(?:\\n##\\s+|$)`, 'i');
+      const re = new RegExp(`##\\s+${heading}\\s*\\n([\\s\\S]*?)(?:\\n##\\s+|$)`, "i");
       const m = fullDoc.match(re);
-      return m ? m[1].trim() : '';
+      return m ? m[1].trim() : "";
     };
 
     const insights = {
-      summary: getSection('Resumen generado por AI') || '',
-      keyPoints: extractList(getSection('Puntos clave') || getSection('Puntos') || ''),
-      actionItems: extractList(getSection('Action items') || getSection('Action') || ''),
-      decisions: extractList(getSection('Decisiones') || getSection('Decision') || ''),
+      summary: getSection("Resumen generado por AI") || "",
+      keyPoints: extractList(getSection("Puntos clave") || getSection("Puntos") || ""),
+      actionItems: extractList(getSection("Action items") || getSection("Action") || ""),
+      decisions: extractList(getSection("Decisiones") || getSection("Decision") || ""),
     };
 
-    const insightsPath = join(TRANSCRIPTIONS_DIR, `${baseName}-insights.json`);
-    await writeFile(insightsPath, JSON.stringify(insights, null, 2));
-    console.log(`Insights saved: ${insightsPath}`);
+    await storageSave(`${baseName}-insights.json`, JSON.stringify(insights, null, 2));
+    console.log(`Insights saved: ${baseName}-insights.json`);
   } catch (err) {
-    console.error('Could not save insights JSON:', err.message);
+    console.error("Could not save insights JSON:", err.message);
   }
 
   jsonResponse(res, {
     success: true,
     message: "Transcripcion y resumen guardados",
     summary: summary.substring(0, 200) + "...",
-    files: {
-      audio: audioPath,
-      transcript: transcriptPath,
-      summary: summaryPath,
-    },
   });
 }
 
 async function handleListMeetings(res) {
-  const files = await readdir(TRANSCRIPTIONS_DIR);
-  const summaries = files.filter((f) => f.endsWith("-summary.md"));
+  const summaryFiles = await storageList("-summary.md");
 
   const meetings = await Promise.all(
-    summaries.map(async (file) => {
-      const content = await readFile(join(TRANSCRIPTIONS_DIR, file), "utf-8");
-      const titleMatch = content.match(/^# (.+)/m);
-      // Prefer the human readable date present in the saved summary header (# Reunion ...)
-      const dateMatch = content.match(/^# Reunion\s+(.+)$/m);
-      return {
-        file,
-        title: titleMatch?.[1] || file,
-        date: dateMatch?.[1] || file,
-        preview: content.substring(0, 300),
-      };
+    summaryFiles.map(async (file) => {
+      try {
+        const content = await storageRead(file);
+        const titleMatch = content.match(/^# (.+)/m);
+        const dateMatch = content.match(/^# Reunion\s+(.+)$/m);
+        return {
+          file,
+          title: titleMatch?.[1] || file,
+          date: dateMatch?.[1] || file,
+          preview: content.substring(0, 300),
+        };
+      } catch {
+        return { file, title: file, date: file, preview: "" };
+      }
     })
   );
 
@@ -218,21 +294,20 @@ async function handleListMeetings(res) {
 async function handleGetMeeting(res, filename) {
   try {
     const safeName = filename.replace(/[^a-zA-Z0-9._-]/g, "");
-    const filePath = join(TRANSCRIPTIONS_DIR, safeName);
-    const content = await readFile(filePath, "utf-8");
+    const content = await storageRead(safeName);
 
     // Try to also load the raw transcript
     const txtFile = safeName.replace("-summary.md", ".txt");
     let transcript = "";
     try {
-      transcript = await readFile(join(TRANSCRIPTIONS_DIR, txtFile), "utf-8");
+      transcript = await storageRead(txtFile);
     } catch { /* no separate transcript file */ }
 
     // Try to load structured insights JSON if present
-    const insightsFile = safeName.replace('-summary.md', '-insights.json');
+    const insightsFile = safeName.replace("-summary.md", "-insights.json");
     let insights = null;
     try {
-      const raw = await readFile(join(TRANSCRIPTIONS_DIR, insightsFile), 'utf-8');
+      const raw = await storageRead(insightsFile);
       insights = JSON.parse(raw);
     } catch { /* ok if not present */ }
 
@@ -242,8 +317,11 @@ async function handleGetMeeting(res, filename) {
   }
 }
 
+// ─────────────────────────────────────────
+//  HTTP Server
+// ─────────────────────────────────────────
+
 const server = createServer(async (req, res) => {
-  // Handle CORS preflight
   if (req.method === "OPTIONS") {
     res.writeHead(204, corsHeaders());
     res.end();
@@ -253,38 +331,40 @@ const server = createServer(async (req, res) => {
   try {
     if (req.method === "POST" && req.url === "/transcribe") {
       await handleTranscribe(req, res);
+
     } else if (req.method === "GET" && req.url === "/meetings") {
       await handleListMeetings(res);
+
     } else if (req.method === "GET" && req.url?.startsWith("/meeting/")) {
-      // Support optional ?format=txt to return plain text (summary + transcript)
       const url = new URL(req.url, `http://localhost:${PORT}`);
       const filename = decodeURIComponent(url.pathname.split("/meeting/")[1]);
-      const format = url.searchParams.get('format') || '';
-      if (format === 'txt') {
-        // Serve a plain text export
+      const format = url.searchParams.get("format") || "";
+
+      if (format === "txt") {
         try {
           const safeName = filename.replace(/[^a-zA-Z0-9._-]/g, "");
-          const summaryPath = join(TRANSCRIPTIONS_DIR, safeName);
-          const content = await readFile(summaryPath, 'utf-8');
-          // Try to include the raw transcript if available
-          const txtFile = safeName.replace('-summary.md', '.txt');
-          let transcript = '';
-          try { transcript = await readFile(join(TRANSCRIPTIONS_DIR, txtFile), 'utf-8'); } catch {}
-          res.writeHead(200, { 'Content-Type': 'text/plain; charset=utf-8', ...corsHeaders() });
+          const content = await storageRead(safeName);
+          const txtFile = safeName.replace("-summary.md", ".txt");
+          let transcript = "";
+          try { transcript = await storageRead(txtFile); } catch {}
+          res.writeHead(200, { "Content-Type": "text/plain; charset=utf-8", ...corsHeaders() });
           res.end(content + "\n\n---\n\n" + transcript);
-        } catch (err) {
-          jsonResponse(res, { error: 'Meeting not found' }, 404);
+        } catch {
+          jsonResponse(res, { error: "Meeting not found" }, 404);
         }
       } else {
         await handleGetMeeting(res, filename);
       }
+
     } else if (req.method === "GET" && req.url === "/dashboard") {
       const dashPath = join(__dirname, "dashboard.html");
       const html = await readFile(dashPath, "utf-8");
       res.writeHead(200, { "Content-Type": "text/html; charset=utf-8", ...corsHeaders() });
       res.end(html);
+
     } else if (req.method === "GET" && req.url === "/health") {
-      jsonResponse(res, { status: "ok" });
+      jsonResponse(res, { status: "ok", storage: IS_VERCEL ? "blob" : "local" });
+
     } else {
       jsonResponse(res, { error: "Not found" }, 404);
     }
@@ -296,5 +376,5 @@ const server = createServer(async (req, res) => {
 
 server.listen(PORT, () => {
   console.log(`\n  Meet Assistant Server running on http://localhost:${PORT}`);
-  console.log(`  Transcriptions saved to: ${TRANSCRIPTIONS_DIR}\n`);
+  console.log(`  Storage: ${IS_VERCEL ? "Vercel Blob" : `Local (${LOCAL_TRANSCRIPTIONS_DIR})`}\n`);
 });

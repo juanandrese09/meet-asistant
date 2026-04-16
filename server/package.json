@@ -8,6 +8,7 @@
     "dev": "node --watch server.js"
   },
   "dependencies": {
+    "@vercel/blob": "^2.3.3",
     "openai": "^4.78.0"
   }
 }
