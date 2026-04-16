@@ -6,7 +6,10 @@ import { execSync } from "node:child_process";
 import OpenAI from "openai";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const TRANSCRIPTIONS_DIR = join(__dirname, "transcriptions");
+// On Vercel, only /tmp is writable; locally use the server/transcriptions folder
+const TRANSCRIPTIONS_DIR = process.env.VERCEL
+  ? "/tmp/transcriptions"
+  : join(__dirname, "transcriptions");
 const PORT = process.env.PORT || 3456;
 
 // Ensure OPENAI_API_KEY is set
