@@ -1,22 +1,19 @@
 let recording = false;
 let activeTabId = null;
 let stopTimeout = null;
+let recordingStartTime = null;
 
-// Server URL Configuration
-// Production (Vercel): https://meet-asistant.vercel.app
-// Local development: http://localhost:3456
 const SERVER_URL = "https://meet-asistant.vercel.app";
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message.action === "getStatus") {
-    sendResponse({ recording });
+    sendResponse({ recording, startTime: recordingStartTime });
     return true;
   }
 
   if (message.action === "startRecording") {
-    // streamId already obtained by popup (user gesture context)
     handleStartRecording(message.tabId, message.streamId)
-      .then(() => sendResponse({ success: true }))
+      .then(() => sendResponse({ success: true, startTime: recordingStartTime }))
       .catch((err) => sendResponse({ success: false, error: err.message }));
     return true;
   }
@@ -28,7 +25,6 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return true;
   }
 
-  // Offscreen document sends back audio data
   if (message.action === "offscreen-stopped") {
     // Handled by the one-time listener in handleStopRecording
     return false;
@@ -40,42 +36,40 @@ async function handleStartRecording(tabId, streamId) {
 
   activeTabId = tabId;
 
-  // Create offscreen document
   await ensureOffscreenDocument();
-
-  // Small delay to ensure offscreen document is ready
   await new Promise((r) => setTimeout(r, 300));
 
-  // Tell offscreen to start recording with the stream ID
   chrome.runtime.sendMessage({
     action: "offscreen-start",
     streamId,
   });
 
   recording = true;
+  recordingStartTime = Date.now();
 
   chrome.action.setBadgeText({ text: "REC" });
-  chrome.action.setBadgeBackgroundColor({ color: "#FF0000" });
+  chrome.action.setBadgeBackgroundColor({ color: "#EF4444" });
 
-  // Notify content script
   chrome.tabs.sendMessage(tabId, { action: "recordingStarted" }).catch(() => {});
 }
 
 async function handleStopRecording() {
   if (!recording) throw new Error("No se está grabando");
 
+  const startTime = recordingStartTime;
+
   return new Promise((resolve, reject) => {
     const listener = (message) => {
       if (message.action === "offscreen-stopped") {
         chrome.runtime.onMessage.removeListener(listener);
 
-        // Clear timeout if set
         if (stopTimeout) {
           clearTimeout(stopTimeout);
           stopTimeout = null;
         }
 
         recording = false;
+        recordingStartTime = null;
         chrome.action.setBadgeText({ text: "" });
 
         if (activeTabId) {
@@ -83,42 +77,66 @@ async function handleStopRecording() {
         }
 
         if (message.audioBase64) {
-          sendToServer(message.audioBase64).then(resolve).catch(reject);
+          const durationMs = startTime ? Date.now() - startTime : null;
+          sendToServer(message.audioBase64, durationMs).then(resolve).catch(reject);
         } else {
-          resolve({ message: "Grabación detenida (sin audio)" });
+          reject(new Error(message.error || "No se capturó audio"));
         }
       }
     };
     chrome.runtime.onMessage.addListener(listener);
 
-    // Tell offscreen to stop
     chrome.runtime.sendMessage({ action: "offscreen-stop" });
 
-    // Timeout (will be cleared when the offscreen response arrives)
+    // Longer timeout to handle big recordings + server transcription
     stopTimeout = setTimeout(() => {
       chrome.runtime.onMessage.removeListener(listener);
       recording = false;
+      recordingStartTime = null;
       chrome.action.setBadgeText({ text: "" });
-      reject(new Error("Timeout esperando audio"));
-    }, 30000);
+      reject(new Error("Timeout: el audio tardó demasiado en procesarse"));
+    }, 120000); // 2 min
   });
 }
 
-async function sendToServer(base64Audio) {
-  const response = await fetch(`${SERVER_URL}/transcribe`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      audio: base64Audio,
-      timestamp: new Date().toISOString(),
-    }),
-  });
+// Retry with exponential backoff for network/server errors
+async function sendToServer(base64Audio, durationMs) {
+  const MAX_ATTEMPTS = 3;
+  let lastError;
 
-  if (!response.ok) {
-    const text = await response.text();
-    throw new Error(`Server error ${response.status}: ${text}`);
+  for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+    try {
+      const response = await fetch(`${SERVER_URL}/transcribe`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          audio: base64Audio,
+          timestamp: new Date().toISOString(),
+          durationMs: durationMs || null,
+        }),
+      });
+
+      if (!response.ok) {
+        const text = await response.text();
+        // Don't retry on 4xx — it's a client-side problem
+        if (response.status >= 400 && response.status < 500) {
+          throw new Error(`Error ${response.status}: ${text}`);
+        }
+        throw new Error(`Server error ${response.status}: ${text}`);
+      }
+      return await response.json();
+    } catch (err) {
+      lastError = err;
+      // Don't retry on 4xx
+      if (err.message.startsWith("Error 4")) throw err;
+      if (attempt < MAX_ATTEMPTS) {
+        const backoff = 1000 * Math.pow(2, attempt - 1); // 1s, 2s
+        console.log(`Attempt ${attempt} failed, retrying in ${backoff}ms...`);
+        await new Promise((r) => setTimeout(r, backoff));
+      }
+    }
   }
-  return await response.json();
+  throw lastError;
 }
 
 async function ensureOffscreenDocument() {

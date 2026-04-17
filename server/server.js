@@ -91,6 +91,23 @@ async function storageList(suffix) {
   return files.filter((f) => f.endsWith(suffix));
 }
 
+async function storageDelete(filename) {
+  if (IS_VERCEL) {
+    const { list, del } = await import("@vercel/blob");
+    const { blobs } = await list({ prefix: `transcriptions/${filename}` });
+    const blob = blobs.find((b) => b.pathname === `transcriptions/${filename}`);
+    if (blob) await del(blob.url);
+    return !!blob;
+  }
+  const { unlink } = await import("node:fs/promises");
+  try {
+    await unlink(join(LOCAL_TRANSCRIPTIONS_DIR, filename));
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 // ─────────────────────────────────────────
 //  CORS helpers
 // ─────────────────────────────────────────
@@ -98,7 +115,7 @@ async function storageList(suffix) {
 function corsHeaders() {
   return {
     "Access-Control-Allow-Origin": "*",
-    "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+    "Access-Control-Allow-Methods": "GET, POST, DELETE, OPTIONS",
     "Access-Control-Allow-Headers": "Content-Type",
   };
 }
@@ -157,7 +174,7 @@ async function handleTranscribe(req, res) {
   let body = "";
   for await (const chunk of req) body += chunk;
 
-  const { audio, timestamp } = JSON.parse(body);
+  const { audio, timestamp, durationMs } = JSON.parse(body);
 
   if (!audio) {
     jsonResponse(res, { error: "No audio data received" }, 400);
@@ -167,10 +184,10 @@ async function handleTranscribe(req, res) {
   const audioBuffer = Buffer.from(audio, "base64");
   console.log(`Audio received: ${audioBuffer.length} bytes`);
 
-  if (audioBuffer.length < 1000) {
+  if (audioBuffer.length < 2000) {
     jsonResponse(
       res,
-      { error: `Audio muy corto (${audioBuffer.length} bytes) — puede que no se haya grabado audio` },
+      { error: `Audio muy corto (${audioBuffer.length} bytes) — verifica que la pestaña tenga sonido y que la grabación haya durado al menos unos segundos` },
       400
     );
     return;
@@ -250,8 +267,11 @@ ${transcriptText}
     const insights = {
       summary: getSection("Resumen generado por AI") || "",
       keyPoints: extractList(getSection("Puntos clave") || getSection("Puntos") || ""),
-      actionItems: extractList(getSection("Action items") || getSection("Action") || ""),
+      actionItems: extractList(getSection("Action items") || getSection("Action") || getSection("Tareas") || ""),
       decisions: extractList(getSection("Decisiones") || getSection("Decision") || ""),
+      durationMs: durationMs || null,
+      timestamp: timestamp || new Date().toISOString(),
+      audioSizeBytes: audioBuffer.length,
     };
 
     await storageSave(`${baseName}-insights.json`, JSON.stringify(insights, null, 2));
@@ -340,14 +360,20 @@ const server = createServer(async (req, res) => {
       const filename = decodeURIComponent(url.pathname.split("/meeting/")[1]);
       const format = url.searchParams.get("format") || "";
 
-      if (format === "txt") {
+      if (format === "txt" || format === "md") {
         try {
           const safeName = filename.replace(/[^a-zA-Z0-9._-]/g, "");
           const content = await storageRead(safeName);
           const txtFile = safeName.replace("-summary.md", ".txt");
           let transcript = "";
           try { transcript = await storageRead(txtFile); } catch {}
-          res.writeHead(200, { "Content-Type": "text/plain; charset=utf-8", ...corsHeaders() });
+          const mime = format === "md" ? "text/markdown" : "text/plain";
+          const disposition = `attachment; filename="${safeName.replace(/\.md$/, "")}.${format}"`;
+          res.writeHead(200, {
+            "Content-Type": `${mime}; charset=utf-8`,
+            "Content-Disposition": disposition,
+            ...corsHeaders(),
+          });
           res.end(content + "\n\n---\n\n" + transcript);
         } catch {
           jsonResponse(res, { error: "Meeting not found" }, 404);
@@ -355,6 +381,29 @@ const server = createServer(async (req, res) => {
       } else {
         await handleGetMeeting(res, filename);
       }
+
+    } else if (req.method === "DELETE" && req.url?.startsWith("/meeting/")) {
+      const url = new URL(req.url, `http://localhost:${PORT}`);
+      const filename = decodeURIComponent(url.pathname.split("/meeting/")[1]);
+      const safeName = filename.replace(/[^a-zA-Z0-9._-]/g, "");
+      const base = safeName.replace("-summary.md", "");
+      // Delete all related files
+      const files = [
+        `${base}-summary.md`,
+        `${base}.txt`,
+        `${base}.webm`,
+        `${base}-insights.json`,
+      ];
+      const deleted = [];
+      for (const f of files) {
+        try {
+          const ok = await storageDelete(f);
+          if (ok) deleted.push(f);
+        } catch (e) {
+          console.error(`Failed to delete ${f}:`, e.message);
+        }
+      }
+      jsonResponse(res, { success: true, deleted });
 
     } else if (req.method === "GET" && req.url === "/dashboard") {
       const dashPath = join(__dirname, "dashboard.html");

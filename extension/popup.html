@@ -4,96 +4,311 @@
   <meta charset="UTF-8">
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
+    :root {
+      --bg-0: #071226;
+      --bg-1: #0d1f3c;
+      --panel: rgba(255,255,255,0.035);
+      --border: rgba(255,255,255,0.08);
+      --cyan: #06b6d4;
+      --cyan-light: #22d3ee;
+      --blue: #3b82f6;
+      --red: #ef4444;
+      --red-dark: #dc2626;
+      --green: #22c55e;
+      --green-dark: #16a34a;
+      --text-1: #f1f5f9;
+      --text-2: #cbd5e1;
+      --text-3: #94a3b8;
+      --text-4: #64748b;
+    }
     body {
-      width: 340px;
-      padding: 20px;
+      width: 320px;
+      padding: 18px;
       font-family: Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
-      background: linear-gradient(180deg,#071226 0%, #0f172a 100%);
-      color: #e6f6f9;
+      background: radial-gradient(circle at 30% 0%, #0d1f3c 0%, #071226 60%);
+      color: var(--text-1);
+      overflow: hidden;
     }
-    h1 {
-      font-size: 16px;
-      font-weight: 600;
-      margin-bottom: 16px;
-      display: flex;
-      align-items: center;
-      gap: 8px;
-    }
-    h1 .dot { width: 10px; height: 10px; border-radius: 50%; background: #06b6d4; box-shadow:0 0 8px #06b6d4; }
-    h1 .dot.recording { background: #ef4444; animation: pulse 1s infinite; box-shadow:0 0 8px #ef4444; }
-    @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.3; } }
 
+    /* Header */
+    .header {
+      display: flex; align-items: center; gap: 10px; margin-bottom: 14px;
+    }
+    .header-icon {
+      width: 36px; height: 36px;
+      border-radius: 10px;
+      background: linear-gradient(135deg, var(--cyan), var(--blue));
+      box-shadow: 0 4px 12px rgba(6,182,212,0.35);
+      display: flex; align-items: center; justify-content: center;
+      flex-shrink: 0;
+    }
+    .header-icon svg { width: 20px; height: 20px; color: white; }
+    .header-title {
+      font-size: 15px; font-weight: 700; letter-spacing: -0.2px;
+    }
+    .header-sub {
+      font-size: 11px; color: var(--text-4); margin-top: 1px;
+    }
+
+    /* Status */
     .status {
-      font-size: 13px;
-      color: #999;
-      margin-bottom: 16px;
+      display: flex; align-items: center; gap: 8px;
+      padding: 10px 12px;
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      margin-bottom: 12px;
+      font-size: 12px; color: var(--text-3);
+      transition: all 0.25s ease;
     }
-    .status.active { color: #f87171; }
+    .status-dot {
+      width: 7px; height: 7px; border-radius: 50%;
+      background: var(--cyan);
+      box-shadow: 0 0 8px var(--cyan);
+      flex-shrink: 0;
+    }
+    .status.recording {
+      background: rgba(239,68,68,0.08);
+      border-color: rgba(239,68,68,0.25);
+      color: #fecaca;
+    }
+    .status.recording .status-dot {
+      background: var(--red);
+      box-shadow: 0 0 10px var(--red);
+      animation: pulse 1.2s infinite;
+    }
+    .status.processing {
+      background: rgba(59,130,246,0.08);
+      border-color: rgba(59,130,246,0.25);
+      color: #bfdbfe;
+    }
+    .status.processing .status-dot {
+      background: var(--blue);
+      animation: pulse 0.8s infinite;
+    }
+    @keyframes pulse {
+      0%, 100% { opacity: 1; transform: scale(1); }
+      50%      { opacity: 0.4; transform: scale(0.85); }
+    }
 
+    /* Timer */
+    .timer {
+      display: none;
+      margin-bottom: 12px;
+      padding: 14px;
+      background: linear-gradient(135deg, rgba(239,68,68,0.1), rgba(239,68,68,0.02));
+      border: 1px solid rgba(239,68,68,0.2);
+      border-radius: 12px;
+      text-align: center;
+    }
+    .timer.show { display: block; animation: fadeIn 0.3s ease; }
+    .timer-label {
+      font-size: 10px; font-weight: 700;
+      letter-spacing: 1.5px;
+      color: var(--red);
+      margin-bottom: 4px;
+      text-transform: uppercase;
+    }
+    .timer-value {
+      font-size: 26px;
+      font-weight: 700;
+      font-variant-numeric: tabular-nums;
+      color: #fecaca;
+      letter-spacing: 0.5px;
+    }
+    .timer-waves {
+      display: flex; align-items: center; justify-content: center;
+      gap: 3px; margin-top: 8px; height: 16px;
+    }
+    .timer-waves span {
+      width: 3px; background: var(--red); border-radius: 2px;
+      animation: wave 1.1s ease-in-out infinite;
+    }
+    .timer-waves span:nth-child(1) { height: 40%; animation-delay: -0.4s; }
+    .timer-waves span:nth-child(2) { height: 70%; animation-delay: -0.2s; }
+    .timer-waves span:nth-child(3) { height: 100%; animation-delay: 0s; }
+    .timer-waves span:nth-child(4) { height: 65%; animation-delay: -0.3s; }
+    .timer-waves span:nth-child(5) { height: 45%; animation-delay: -0.1s; }
+    @keyframes wave {
+      0%, 100% { transform: scaleY(0.4); }
+      50%      { transform: scaleY(1); }
+    }
+
+    /* Buttons */
     button {
       width: 100%;
-      padding: 12px;
+      padding: 12px 14px;
       border: none;
-      border-radius: 8px;
-      font-size: 14px;
+      border-radius: 10px;
+      font-size: 13px;
       font-weight: 600;
+      font-family: inherit;
       cursor: pointer;
-      transition: all 0.2s;
+      transition: all 0.18s ease;
+      display: flex; align-items: center; justify-content: center;
+      gap: 8px;
     }
+    button svg { width: 15px; height: 15px; flex-shrink: 0; }
+
     #recordBtn {
-      background: linear-gradient(90deg,#06b6d4,#3b82f6);
-      color: #042029;
-      box-shadow: 0 6px 18px rgba(6,182,212,0.12);
-    }
-    #recordBtn:hover { background: #22c55e; }
-    #recordBtn.recording {
-      background: #ef4444;
+      background: linear-gradient(135deg, var(--cyan), var(--blue));
       color: white;
+      box-shadow: 0 4px 14px rgba(6,182,212,0.25);
     }
-    #recordBtn.recording:hover { background: #dc2626; }
-    #recordBtn:disabled {
-      background: #555;
-      color: #999;
+    #recordBtn:hover:not(:disabled) {
+      box-shadow: 0 6px 18px rgba(6,182,212,0.4);
+      transform: translateY(-1px);
+    }
+    #recordBtn.recording {
+      background: linear-gradient(135deg, var(--red), var(--red-dark));
+      box-shadow: 0 4px 14px rgba(239,68,68,0.3);
+    }
+    #recordBtn.recording:hover:not(:disabled) {
+      box-shadow: 0 6px 18px rgba(239,68,68,0.45);
+      transform: translateY(-1px);
+    }
+    button:disabled {
+      background: rgba(255,255,255,0.05) !important;
+      color: var(--text-4) !important;
       cursor: not-allowed;
+      box-shadow: none !important;
+      transform: none !important;
     }
 
     #dashboardBtn {
-      background: linear-gradient(90deg,#22c55e,#16a34a);
-      color: white;
-      margin-top: 10px;
-      box-shadow: 0 6px 18px rgba(34,197,94,0.12);
+      background: var(--panel);
+      border: 1px solid var(--border);
+      color: var(--text-2);
+      margin-top: 8px;
     }
-    #dashboardBtn:hover { background: linear-gradient(90deg,#16a34a,#15803d); }
-
-    .info {
-      margin-top: 12px;
-      font-size: 11px;
-      color: #666;
-      text-align: center;
+    #dashboardBtn:hover {
+      border-color: var(--cyan);
+      color: var(--cyan);
+      background: rgba(6,182,212,0.06);
     }
 
-    .result {
-      margin-top: 12px;
-      padding: 10px;
-      background: #16213e;
-      border-radius: 6px;
-      font-size: 12px;
+    /* Toast */
+    .toast {
       display: none;
+      margin-top: 12px;
+      padding: 11px 13px;
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      font-size: 12px;
+      animation: fadeIn 0.25s ease;
     }
-    .result.show { display: block; }
-    .result .label { color: #06b6d4; font-weight: 600; margin-bottom: 4px; }
+    .toast.show { display: block; }
+    .toast.success {
+      background: rgba(34,197,94,0.08);
+      border-color: rgba(34,197,94,0.25);
+    }
+    .toast.error {
+      background: rgba(239,68,68,0.08);
+      border-color: rgba(239,68,68,0.25);
+    }
+    .toast-label {
+      display: flex; align-items: center; gap: 6px;
+      font-weight: 700;
+      font-size: 11px;
+      letter-spacing: 0.3px;
+      text-transform: uppercase;
+      margin-bottom: 4px;
+    }
+    .toast.success .toast-label { color: var(--green); }
+    .toast.error .toast-label { color: var(--red); }
+    .toast.info .toast-label { color: var(--cyan); }
+    .toast-label svg { width: 12px; height: 12px; }
+    .toast-text {
+      color: var(--text-2);
+      line-height: 1.45;
+      word-break: break-word;
+    }
+    .toast-retry {
+      margin-top: 8px;
+      width: 100%;
+      padding: 7px 10px;
+      background: rgba(239,68,68,0.12);
+      border: 1px solid rgba(239,68,68,0.3);
+      color: var(--red);
+      border-radius: 6px;
+      font-size: 11px;
+      font-weight: 600;
+      cursor: pointer;
+    }
+    .toast-retry:hover { background: rgba(239,68,68,0.2); }
+
+    @keyframes fadeIn {
+      from { opacity: 0; transform: translateY(-4px); }
+      to   { opacity: 1; transform: none; }
+    }
+
+    .footer {
+      margin-top: 12px;
+      font-size: 10px;
+      color: var(--text-4);
+      text-align: center;
+      line-height: 1.5;
+    }
+    .footer a { color: var(--cyan); text-decoration: none; }
   </style>
 </head>
 <body>
-  <h1><span class="dot" id="statusDot"></span> Meet Assistant</h1>
-  <p class="status" id="statusText">Listo para grabar</p>
-  <button id="recordBtn">Iniciar grabacion</button>
-  <button id="dashboardBtn">📊 Ir a Dashboard</button>
-  <div class="result" id="result">
-    <div class="label">Procesando...</div>
-    <div id="resultText"></div>
+  <div class="header">
+    <div class="header-icon">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/>
+        <path d="M19 10v2a7 7 0 0 1-14 0v-2"/>
+        <line x1="12" y1="19" x2="12" y2="23"/>
+        <line x1="8" y1="23" x2="16" y2="23"/>
+      </svg>
+    </div>
+    <div>
+      <div class="header-title">Meet Assistant</div>
+      <div class="header-sub">Graba, transcribe y resume</div>
+    </div>
   </div>
-  <p class="info">Asegurate de estar en una tab de Google Meet</p>
+
+  <div class="status" id="status">
+    <span class="status-dot"></span>
+    <span id="statusText">Listo para grabar</span>
+  </div>
+
+  <div class="timer" id="timer">
+    <div class="timer-label">● Grabando</div>
+    <div class="timer-value" id="timerValue">00:00</div>
+    <div class="timer-waves">
+      <span></span><span></span><span></span><span></span><span></span>
+    </div>
+  </div>
+
+  <button id="recordBtn">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+      <circle cx="12" cy="12" r="4" fill="currentColor"/>
+    </svg>
+    <span id="recordBtnText">Iniciar grabación</span>
+  </button>
+
+  <button id="dashboardBtn">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+      <rect x="3" y="3" width="7" height="9"/>
+      <rect x="14" y="3" width="7" height="5"/>
+      <rect x="14" y="12" width="7" height="9"/>
+      <rect x="3" y="16" width="7" height="5"/>
+    </svg>
+    Ir al Dashboard
+  </button>
+
+  <div class="toast" id="toast">
+    <div class="toast-label" id="toastLabel"></div>
+    <div class="toast-text" id="toastText"></div>
+    <button class="toast-retry" id="toastRetry" style="display:none">Reintentar</button>
+  </div>
+
+  <div class="footer">
+    Asegúrate de estar en una tab de <strong>Google Meet</strong>
+  </div>
+
   <script src="popup.js"></script>
 </body>
 </html>
