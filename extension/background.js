@@ -113,6 +113,7 @@ async function sendToServer(base64Audio, durationMs) {
           audio: base64Audio,
           timestamp: new Date().toISOString(),
           durationMs: durationMs || null,
+          tzOffsetMinutes: new Date().getTimezoneOffset(),
         }),
       });
 

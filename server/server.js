@@ -172,7 +172,7 @@ async function handleTranscribe(req, res) {
   let body = "";
   for await (const chunk of req) body += chunk;
 
-  const { audio, timestamp, durationMs } = JSON.parse(body);
+  const { audio, timestamp, durationMs, tzOffsetMinutes } = JSON.parse(body);
 
   if (!audio) {
     jsonResponse(res, { error: "No audio data received" }, 400);
@@ -231,7 +231,13 @@ async function handleTranscribe(req, res) {
   }
 
   // Build and save full summary document
-  const fullDoc = `# Reunion ${new Date(timestamp || Date.now()).toLocaleString("es-MX")}
+  // Shift to the client's local time, then format as es-MX in UTC (since we already shifted)
+  const tsDate = new Date(timestamp || Date.now());
+  const shifted = typeof tzOffsetMinutes === "number"
+    ? new Date(tsDate.getTime() - tzOffsetMinutes * 60000)
+    : tsDate;
+  const displayDate = shifted.toLocaleString("es-MX", { timeZone: "UTC" });
+  const fullDoc = `# Reunion ${displayDate}
 
 ## Resumen generado por AI
 
