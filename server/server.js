@@ -140,7 +140,7 @@ async function transcribeAudio(audioBuffer) {
 
 async function summarizeMeeting(transcript) {
   const response = await openai.chat.completions.create({
-    model: "gpt-4o-mini",
+    model: "gpt-4o",
     max_tokens: 2048,
     messages: [
       {
