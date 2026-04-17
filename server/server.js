@@ -46,7 +46,7 @@ async function storageSave(filename, content) {
 async function storageRead(filename) {
   if (IS_VERCEL) {
     const { get } = await import("@vercel/blob");
-    const result = await get(`transcriptions/${filename}`, { access: "private" });
+    const result = await get(`transcriptions/${filename}`, { access: "private", useCache: false });
     if (!result || result.statusCode !== 200 || !result.stream) {
       throw new Error(`File not found: ${filename}`);
     }
@@ -58,7 +58,7 @@ async function storageRead(filename) {
 async function storageReadBuffer(filename) {
   if (IS_VERCEL) {
     const { get } = await import("@vercel/blob");
-    const result = await get(`transcriptions/${filename}`, { access: "private" });
+    const result = await get(`transcriptions/${filename}`, { access: "private", useCache: false });
     if (!result || result.statusCode !== 200 || !result.stream) {
       throw new Error(`File not found: ${filename}`);
     }
@@ -288,23 +288,24 @@ ${transcriptText}
 async function handleListMeetings(res) {
   const summaryFiles = await storageList("-summary.md");
 
-  const meetings = await Promise.all(
-    summaryFiles.map(async (file) => {
-      try {
-        const content = await storageRead(file);
-        const titleMatch = content.match(/^# (.+)/m);
-        const dateMatch = content.match(/^# Reunion\s+(.+)$/m);
-        return {
-          file,
-          title: titleMatch?.[1] || file,
-          date: dateMatch?.[1] || file,
-          preview: content.substring(0, 300),
-        };
-      } catch {
-        return { file, title: file, date: file, preview: "" };
-      }
-    })
-  );
+  // Sequential reads — avoids cold-start concurrent-auth issues with private Blob
+  const meetings = [];
+  for (const file of summaryFiles) {
+    try {
+      const content = await storageRead(file);
+      const titleMatch = content.match(/^# (.+)/m);
+      const dateMatch = content.match(/^# Reunion\s+(.+)$/m);
+      meetings.push({
+        file,
+        title: titleMatch?.[1] || file,
+        date: dateMatch?.[1] || file,
+        preview: content.substring(0, 300),
+      });
+    } catch (err) {
+      console.error(`List: failed to read ${file}:`, err.message);
+      meetings.push({ file, title: file, date: file, preview: "" });
+    }
+  }
 
   jsonResponse(res, { meetings: meetings.reverse() });
 }
