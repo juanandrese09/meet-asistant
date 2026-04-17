@@ -49,8 +49,9 @@ async function startRecording() {
   hideToast();
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
 
-  if (!tab?.url?.includes("meet.google.com")) {
-    showToast("error", "Abre una reunión de Google Meet primero", ICONS.error);
+  // Allow any http(s) tab so users can test/record audio from any source
+  if (!tab?.url || !/^https?:\/\//.test(tab.url)) {
+    showToast("error", "Abre una página web con audio (Meet, YouTube, etc.)", ICONS.error);
     return;
   }
 
