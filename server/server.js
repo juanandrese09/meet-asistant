@@ -33,7 +33,7 @@ async function storageSave(filename, content) {
   if (IS_VERCEL) {
     const { put } = await import("@vercel/blob");
     const blob = await put(`transcriptions/${filename}`, content, {
-      access: "public",
+      access: "private",
       addRandomSuffix: false,
     });
     return blob.url;
