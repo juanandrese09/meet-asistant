@@ -45,26 +45,24 @@ async function storageSave(filename, content) {
 
 async function storageRead(filename) {
   if (IS_VERCEL) {
-    const { list } = await import("@vercel/blob");
-    const { blobs } = await list({ prefix: `transcriptions/${filename}` });
-    const blob = blobs.find((b) => b.pathname === `transcriptions/${filename}`);
-    if (!blob) throw new Error(`File not found: ${filename}`);
-    const res = await fetch(blob.url);
-    if (!res.ok) throw new Error(`Failed to fetch blob: ${filename}`);
-    return await res.text();
+    const { get } = await import("@vercel/blob");
+    const result = await get(`transcriptions/${filename}`, { access: "private" });
+    if (!result || result.statusCode !== 200 || !result.stream) {
+      throw new Error(`File not found: ${filename}`);
+    }
+    return await new Response(result.stream).text();
   }
   return await readFile(join(LOCAL_TRANSCRIPTIONS_DIR, filename), "utf-8");
 }
 
 async function storageReadBuffer(filename) {
   if (IS_VERCEL) {
-    const { list } = await import("@vercel/blob");
-    const { blobs } = await list({ prefix: `transcriptions/${filename}` });
-    const blob = blobs.find((b) => b.pathname === `transcriptions/${filename}`);
-    if (!blob) throw new Error(`File not found: ${filename}`);
-    const res = await fetch(blob.url);
-    if (!res.ok) throw new Error(`Failed to fetch blob: ${filename}`);
-    return Buffer.from(await res.arrayBuffer());
+    const { get } = await import("@vercel/blob");
+    const result = await get(`transcriptions/${filename}`, { access: "private" });
+    if (!result || result.statusCode !== 200 || !result.stream) {
+      throw new Error(`File not found: ${filename}`);
+    }
+    return Buffer.from(await new Response(result.stream).arrayBuffer());
   }
   return await readFile(join(LOCAL_TRANSCRIPTIONS_DIR, filename));
 }
