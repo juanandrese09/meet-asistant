@@ -1,19 +1,51 @@
-let recording = false;
-let activeTabId = null;
 let stopTimeout = null;
-let recordingStartTime = null;
 
-const SERVER_URL = "https://meet-asistant.vercel.app";
+const DEFAULT_SERVER_URL = "https://meet-asistant.vercel.app";
+
+function getServerUrl() {
+  return localStorage.getItem("ma_server_url") || DEFAULT_SERVER_URL;
+}
+
+function getApiKey() {
+  return localStorage.getItem("ma_api_key") || "";
+}
+
+async function getRecordingState() {
+  try {
+    const raw = await chrome.storage.local.get(["ma_recording", "ma_start_time", "ma_active_tab"]);
+    return {
+      recording: !!raw.ma_recording,
+      startTime: raw.ma_start_time || null,
+      activeTabId: raw.ma_active_tab || null,
+    };
+  } catch {
+    return { recording: false, startTime: null, activeTabId: null };
+  }
+}
+
+async function setRecordingState(recording, startTime, activeTabId) {
+  try {
+    await chrome.storage.local.set({
+      ma_recording: recording,
+      ma_start_time: startTime,
+      ma_active_tab: activeTabId,
+    });
+  } catch (e) {
+    console.error("Failed to persist recording state:", e);
+  }
+}
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message.action === "getStatus") {
-    sendResponse({ recording, startTime: recordingStartTime });
+    getRecordingState().then((state) => {
+      sendResponse({ recording: state.recording, startTime: state.startTime });
+    });
     return true;
   }
 
   if (message.action === "startRecording") {
     handleStartRecording(message.tabId, message.streamId)
-      .then(() => sendResponse({ success: true, startTime: recordingStartTime }))
+      .then(() => sendResponse({ success: true }))
       .catch((err) => sendResponse({ success: false, error: err.message }));
     return true;
   }
@@ -26,15 +58,15 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   }
 
   if (message.action === "offscreen-stopped") {
-    // Handled by the one-time listener in handleStopRecording
     return false;
   }
 });
 
 async function handleStartRecording(tabId, streamId) {
-  if (recording) throw new Error("Ya se está grabando");
+  const state = await getRecordingState();
+  if (state.recording) throw new Error("Ya se está grabando");
 
-  activeTabId = tabId;
+  await setRecordingState(true, Date.now(), tabId);
 
   await ensureOffscreenDocument();
   await new Promise((r) => setTimeout(r, 300));
@@ -44,9 +76,6 @@ async function handleStartRecording(tabId, streamId) {
     streamId,
   });
 
-  recording = true;
-  recordingStartTime = Date.now();
-
   chrome.action.setBadgeText({ text: "REC" });
   chrome.action.setBadgeBackgroundColor({ color: "#EF4444" });
 
@@ -54,9 +83,11 @@ async function handleStartRecording(tabId, streamId) {
 }
 
 async function handleStopRecording() {
-  if (!recording) throw new Error("No se está grabando");
+  const state = await getRecordingState();
+  if (!state.recording) throw new Error("No se está grabando");
 
-  const startTime = recordingStartTime;
+  const startTime = state.startTime;
+  const activeTabId = state.activeTabId;
 
   return new Promise((resolve, reject) => {
     const listener = (message) => {
@@ -68,8 +99,7 @@ async function handleStopRecording() {
           stopTimeout = null;
         }
 
-        recording = false;
-        recordingStartTime = null;
+        setRecordingState(false, null, null);
         chrome.action.setBadgeText({ text: "" });
 
         if (activeTabId) {
@@ -88,27 +118,30 @@ async function handleStopRecording() {
 
     chrome.runtime.sendMessage({ action: "offscreen-stop" });
 
-    // Longer timeout to handle big recordings + server transcription
     stopTimeout = setTimeout(() => {
       chrome.runtime.onMessage.removeListener(listener);
-      recording = false;
-      recordingStartTime = null;
+      setRecordingState(false, null, null);
       chrome.action.setBadgeText({ text: "" });
       reject(new Error("Timeout: el audio tardó demasiado en procesarse"));
-    }, 120000); // 2 min
+    }, 120000);
   });
 }
 
-// Retry with exponential backoff for network/server errors
 async function sendToServer(base64Audio, durationMs) {
   const MAX_ATTEMPTS = 3;
   let lastError;
 
   for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
     try {
-      const response = await fetch(`${SERVER_URL}/transcribe`, {
+      const headers = { "Content-Type": "application/json" };
+      const apiKey = getApiKey();
+      if (apiKey) {
+        headers["x-api-key"] = apiKey;
+      }
+
+      const response = await fetch(`${getServerUrl()}/transcribe`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers,
         body: JSON.stringify({
           audio: base64Audio,
           timestamp: new Date().toISOString(),
@@ -119,7 +152,6 @@ async function sendToServer(base64Audio, durationMs) {
 
       if (!response.ok) {
         const text = await response.text();
-        // Don't retry on 4xx — it's a client-side problem
         if (response.status >= 400 && response.status < 500) {
           throw new Error(`Error ${response.status}: ${text}`);
         }
@@ -128,10 +160,9 @@ async function sendToServer(base64Audio, durationMs) {
       return await response.json();
     } catch (err) {
       lastError = err;
-      // Don't retry on 4xx
       if (err.message.startsWith("Error 4")) throw err;
       if (attempt < MAX_ATTEMPTS) {
-        const backoff = 1000 * Math.pow(2, attempt - 1); // 1s, 2s
+        const backoff = 1000 * Math.pow(2, attempt - 1);
         console.log(`Attempt ${attempt} failed, retrying in ${backoff}ms...`);
         await new Promise((r) => setTimeout(r, backoff));
       }
@@ -150,3 +181,12 @@ async function ensureOffscreenDocument() {
     justification: "Recording tab audio for meeting transcription",
   });
 }
+
+// Restore badge on service worker restart
+chrome.runtime.onStartup.addListener(async () => {
+  const state = await getRecordingState();
+  if (state.recording) {
+    chrome.action.setBadgeText({ text: "REC" });
+    chrome.action.setBadgeBackgroundColor({ color: "#EF4444" });
+  }
+});

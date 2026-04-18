@@ -1,6 +1,6 @@
 import { createServer } from "node:http";
 import { writeFile, readFile, mkdir, readdir } from "node:fs/promises";
-import { join, dirname } from "node:path";
+import { join, dirname, basename } from "node:path";
 import { fileURLToPath } from "node:url";
 import OpenAI from "openai";
 
@@ -8,6 +8,10 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const IS_VERCEL = !!process.env.VERCEL;
 const LOCAL_TRANSCRIPTIONS_DIR = join(__dirname, "transcriptions");
 const PORT = process.env.PORT || 3456;
+const MAX_BODY_SIZE = 50 * 1024 * 1024; // 50MB
+
+// API key for authenticating extension + dashboard requests
+const API_KEY = process.env.API_KEY;
 
 // Ensure OPENAI_API_KEY is set
 if (!process.env.OPENAI_API_KEY) {
@@ -30,41 +34,44 @@ if (!IS_VERCEL) {
 // ─────────────────────────────────────────
 
 async function storageSave(filename, content) {
+  const safeName = basename(filename);
   if (IS_VERCEL) {
     const { put } = await import("@vercel/blob");
-    const blob = await put(`transcriptions/${filename}`, content, {
+    const blob = await put(`transcriptions/${safeName}`, content, {
       access: "private",
       addRandomSuffix: false,
     });
     return blob.url;
   }
-  const path = join(LOCAL_TRANSCRIPTIONS_DIR, filename);
+  const path = join(LOCAL_TRANSCRIPTIONS_DIR, safeName);
   await writeFile(path, content);
   return path;
 }
 
 async function storageRead(filename) {
+  const safeName = basename(filename);
   if (IS_VERCEL) {
     const { get } = await import("@vercel/blob");
-    const result = await get(`transcriptions/${filename}`, { access: "private", useCache: false });
+    const result = await get(`transcriptions/${safeName}`, { access: "private", useCache: false });
     if (!result || result.statusCode !== 200 || !result.stream) {
-      throw new Error(`File not found: ${filename}`);
+      throw new Error(`File not found: ${safeName}`);
     }
     return await new Response(result.stream).text();
   }
-  return await readFile(join(LOCAL_TRANSCRIPTIONS_DIR, filename), "utf-8");
+  return await readFile(join(LOCAL_TRANSCRIPTIONS_DIR, safeName), "utf-8");
 }
 
 async function storageReadBuffer(filename) {
+  const safeName = basename(filename);
   if (IS_VERCEL) {
     const { get } = await import("@vercel/blob");
-    const result = await get(`transcriptions/${filename}`, { access: "private", useCache: false });
+    const result = await get(`transcriptions/${safeName}`, { access: "private", useCache: false });
     if (!result || result.statusCode !== 200 || !result.stream) {
-      throw new Error(`File not found: ${filename}`);
+      throw new Error(`File not found: ${safeName}`);
     }
     return Buffer.from(await new Response(result.stream).arrayBuffer());
   }
-  return await readFile(join(LOCAL_TRANSCRIPTIONS_DIR, filename));
+  return await readFile(join(LOCAL_TRANSCRIPTIONS_DIR, safeName));
 }
 
 async function storageList(suffix) {
@@ -90,16 +97,17 @@ async function storageList(suffix) {
 }
 
 async function storageDelete(filename) {
+  const safeName = basename(filename);
   if (IS_VERCEL) {
     const { list, del } = await import("@vercel/blob");
-    const { blobs } = await list({ prefix: `transcriptions/${filename}` });
-    const blob = blobs.find((b) => b.pathname === `transcriptions/${filename}`);
+    const { blobs } = await list({ prefix: `transcriptions/${safeName}` });
+    const blob = blobs.find((b) => b.pathname === `transcriptions/${safeName}`);
     if (blob) await del(blob.url);
     return !!blob;
   }
   const { unlink } = await import("node:fs/promises");
   try {
-    await unlink(join(LOCAL_TRANSCRIPTIONS_DIR, filename));
+    await unlink(join(LOCAL_TRANSCRIPTIONS_DIR, safeName));
     return true;
   } catch {
     return false;
@@ -110,31 +118,94 @@ async function storageDelete(filename) {
 //  CORS helpers
 // ─────────────────────────────────────────
 
-function corsHeaders() {
+const ALLOWED_ORIGINS = [
+  "chrome-extension://extension-id-placeholder",
+  process.env.DASHBOARD_URL,
+].filter(Boolean);
+
+function corsHeaders(req) {
+  const origin = req.headers?.origin;
+  const allowed = origin && ALLOWED_ORIGINS.includes(origin)
+    ? origin
+    : "*";
   return {
-    "Access-Control-Allow-Origin": "*",
-    "Access-Control-Allow-Methods": "GET, POST, DELETE, OPTIONS",
-    "Access-Control-Allow-Headers": "Content-Type",
+    "Access-Control-Allow-Origin": allowed,
+    "Access-Control-Allow-Methods": "GET, POST, PATCH, DELETE, OPTIONS",
+    "Access-Control-Allow-Headers": "Content-Type, x-api-key",
   };
 }
 
-function jsonResponse(res, data, status = 200) {
-  res.writeHead(status, { "Content-Type": "application/json", ...corsHeaders() });
+function jsonResponse(res, data, status = 200, req) {
+  res.writeHead(status, { "Content-Type": "application/json", ...corsHeaders(req) });
   res.end(JSON.stringify(data));
+}
+
+// ─────────────────────────────────────────
+//  Multipart form-data parser (minimal)
+// ─────────────────────────────────────────
+
+function parseMultipart(buffer, boundary) {
+  const boundaryStr = `--${boundary}`;
+  const boundaryBytes = Buffer.from(boundaryStr);
+  const parts = [];
+  let start = 0;
+
+  while (start < buffer.length) {
+    const idx = buffer.indexOf(boundaryBytes, start);
+    if (idx === -1) break;
+
+    const nextIdx = buffer.indexOf(boundaryBytes, idx + boundaryBytes.length);
+    if (nextIdx === -1) break;
+
+    const partData = buffer.slice(idx + boundaryBytes.length, nextIdx);
+    const headerEnd = partData.indexOf("\r\n\r\n");
+    if (headerEnd === -1) {
+      start = nextIdx;
+      continue;
+    }
+
+    const headers = partData.slice(0, headerEnd).toString();
+    const data = partData.slice(headerEnd + 4);
+
+    const nameMatch = headers.match(/name="([^"]+)"/);
+    const filenameMatch = headers.match(/filename="([^"]+)"/);
+    const name = nameMatch ? nameMatch[1] : null;
+
+    if (name) {
+      parts.push({ name, data, filename: filenameMatch ? filenameMatch[1] : null });
+    }
+
+    start = nextIdx;
+  }
+
+  return parts;
+}
+
+// ─────────────────────────────────────────
+//  Auth middleware
+// ─────────────────────────────────────────
+
+function authenticate(req) {
+  if (!API_KEY) return true; // no key set = open (dev mode)
+  const provided = req.headers["x-api-key"];
+  return provided === API_KEY;
 }
 
 // ─────────────────────────────────────────
 //  AI helpers
 // ─────────────────────────────────────────
 
-async function transcribeAudio(audioBuffer) {
+async function transcribeAudio(audioBuffer, language = null) {
   const file = new File([audioBuffer], "meeting.webm", { type: "audio/webm" });
-  const transcription = await openai.audio.transcriptions.create({
+  const params = {
     model: "whisper-1",
     file,
-    language: "es",
     response_format: "verbose_json",
-  });
+  };
+  if (language) {
+    params.language = language;
+  }
+  const transcription = await openai.audio.transcriptions.create(params);
   return transcription;
 }
 
@@ -165,28 +236,92 @@ ${transcript}`,
 }
 
 // ─────────────────────────────────────────
+//  In-memory progress store for SSE
+// ─────────────────────────────────────────
+
+const progressStore = new Map();
+
+function broadcastProgress(sessionId, data) {
+  progressStore.set(sessionId, { ...data, ts: Date.now() });
+}
+
+// ─────────────────────────────────────────
 //  Route handlers
 // ─────────────────────────────────────────
 
 async function handleTranscribe(req, res) {
-  let body = "";
-  for await (const chunk of req) body += chunk;
+  const sessionId = `sess_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+  broadcastProgress(sessionId, { status: "uploading", progress: 0 });
 
-  const { audio, timestamp, durationMs, tzOffsetMinutes } = JSON.parse(body);
+  const contentType = req.headers["content-type"] || "";
+  let audio, timestamp, durationMs, tzOffsetMinutes, language;
+
+  if (contentType.includes("multipart/form-data")) {
+    // FormData upload from offscreen document
+    const chunks = [];
+    for await (const chunk of req) {
+      chunks.push(chunk);
+      const totalSize = chunks.reduce((sum, c) => sum + c.length, 0);
+      if (totalSize > MAX_BODY_SIZE) {
+        broadcastProgress(sessionId, { status: "error", error: "Request too large (max 50MB)" });
+        jsonResponse(res, { error: "Request body too large (max 50MB)" }, 413, req);
+        return;
+      }
+    }
+    const buffer = Buffer.concat(chunks);
+    const boundary = contentType.split("boundary=")[1];
+    if (!boundary) {
+      jsonResponse(res, { error: "Invalid multipart request" }, 400, req);
+      return;
+    }
+
+    const parts = parseMultipart(buffer, boundary);
+    const audioPart = parts.find((p) => p.name === "audio");
+    if (!audioPart) {
+      jsonResponse(res, { error: "No audio data received" }, 400, req);
+      return;
+    }
+
+    audio = audioPart.data;
+    timestamp = parts.find((p) => p.name === "timestamp")?.data?.toString() || null;
+    tzOffsetMinutes = parts.find((p) => p.name === "tzOffsetMinutes")?.data?.toString();
+    language = parts.find((p) => p.name === "language")?.data?.toString() || null;
+    durationMs = null;
+  } else {
+    // JSON upload from background.js
+    let body = "";
+    for await (const chunk of req) {
+      body += chunk;
+      if (body.length > MAX_BODY_SIZE) {
+        broadcastProgress(sessionId, { status: "error", error: "Request too large (max 50MB)" });
+        jsonResponse(res, { error: "Request body too large (max 50MB)" }, 413, req);
+        return;
+      }
+    }
+    const parsed = JSON.parse(body);
+    audio = parsed.audio;
+    timestamp = parsed.timestamp;
+    durationMs = parsed.durationMs;
+    tzOffsetMinutes = parsed.tzOffsetMinutes;
+    language = parsed.language;
+  }
 
   if (!audio) {
-    jsonResponse(res, { error: "No audio data received" }, 400);
+    broadcastProgress(sessionId, { status: "error", error: "No audio data received" });
+    jsonResponse(res, { error: "No audio data received" }, 400, req);
     return;
   }
 
-  const audioBuffer = Buffer.from(audio, "base64");
+  const audioBuffer = typeof audio === "string" ? Buffer.from(audio, "base64") : audio;
   console.log(`Audio received: ${audioBuffer.length} bytes`);
 
   if (audioBuffer.length < 2000) {
+    broadcastProgress(sessionId, { status: "error", error: "Audio muy corto" });
     jsonResponse(
       res,
       { error: `Audio muy corto (${audioBuffer.length} bytes) — verifica que la pestaña tenga sonido y que la grabación haya durado al menos unos segundos` },
-      400
+      400,
+      req
     );
     return;
   }
@@ -198,29 +333,35 @@ async function handleTranscribe(req, res) {
   const baseName = `meeting-${dateStr}`;
 
   // Save raw audio
+  broadcastProgress(sessionId, { status: "saving", progress: 10 });
   await storageSave(`${baseName}.webm`, audioBuffer);
   console.log(`Audio saved: ${baseName}.webm`);
 
-  // Transcribe with Whisper
+  // Transcribe with Whisper (auto-detect language if not specified)
+  broadcastProgress(sessionId, { status: "transcribing", progress: 20 });
   console.log("Transcribing with Whisper...");
   let transcriptText;
   try {
-    const transcription = await transcribeAudio(audioBuffer);
+    const transcription = await transcribeAudio(audioBuffer, language || null);
     transcriptText = transcription.text;
     console.log(`Transcript (${transcriptText.length} chars): ${transcriptText.substring(0, 100)}...`);
   } catch (err) {
     console.error("Whisper error:", err.message);
-    jsonResponse(res, { error: `Error en transcripcion: ${err.message}` }, 500);
+    broadcastProgress(sessionId, { status: "error", error: err.message });
+    jsonResponse(res, { error: `Error en transcripcion: ${err.message}` }, 500, req);
     return;
   }
+
+  broadcastProgress(sessionId, { status: "transcribed", progress: 60 });
 
   // Save transcript
   await storageSave(`${baseName}.txt`, transcriptText);
   console.log(`Transcript saved: ${baseName}.txt`);
 
-  // Summarize with GPT-4o-mini
+  // Summarize with GPT-4o
   let summary = "";
   if (transcriptText.length > 20) {
+    broadcastProgress(sessionId, { status: "summarizing", progress: 70 });
     console.log("Summarizing with GPT-4o-mini...");
     try {
       summary = await summarizeMeeting(transcriptText);
@@ -230,8 +371,9 @@ async function handleTranscribe(req, res) {
     }
   }
 
+  broadcastProgress(sessionId, { status: "done", progress: 100 });
+
   // Build and save full summary document
-  // Shift to the client's local time, then format as es-MX in UTC (since we already shifted)
   const tsDate = new Date(timestamp || Date.now());
   const shifted = typeof tzOffsetMinutes === "number"
     ? new Date(tsDate.getTime() - tzOffsetMinutes * 60000)
@@ -288,47 +430,54 @@ ${transcriptText}
     success: true,
     message: "Transcripcion y resumen guardados",
     summary: summary.substring(0, 200) + "...",
+    sessionId,
   });
 }
 
-async function handleListMeetings(res) {
+async function handleListMeetings(res, req) {
   const summaryFiles = await storageList("-summary.md");
 
-  // Sequential reads — avoids cold-start concurrent-auth issues with private Blob
+  // Concurrent reads with limited concurrency
+  const CONCURRENCY = 5;
   const meetings = [];
-  for (const file of summaryFiles) {
-    try {
-      const content = await storageRead(file);
-      const titleMatch = content.match(/^# (.+)/m);
-      const dateMatch = content.match(/^# Reunion\s+(.+)$/m);
-      meetings.push({
-        file,
-        title: titleMatch?.[1] || file,
-        date: dateMatch?.[1] || file,
-        preview: content.substring(0, 300),
-      });
-    } catch (err) {
-      console.error(`List: failed to read ${file}:`, err.message);
-      meetings.push({ file, title: file, date: file, preview: "" });
+  for (let i = 0; i < summaryFiles.length; i += CONCURRENCY) {
+    const batch = summaryFiles.slice(i, i + CONCURRENCY);
+    const results = await Promise.allSettled(
+      batch.map(async (file) => {
+        const content = await storageRead(file);
+        const titleMatch = content.match(/^# (.+)/m);
+        const dateMatch = content.match(/^# Reunion\s+(.+)$/m);
+        return {
+          file,
+          title: titleMatch?.[1] || file,
+          date: dateMatch?.[1] || file,
+          preview: content.substring(0, 300),
+        };
+      })
+    );
+    for (const r of results) {
+      if (r.status === "fulfilled") {
+        meetings.push(r.value);
+      } else {
+        console.error("List: failed to read file:", r.reason?.message);
+      }
     }
   }
 
-  jsonResponse(res, { meetings: meetings.reverse() });
+  jsonResponse(res, { meetings: meetings.reverse() }, 200, req);
 }
 
-async function handleGetMeeting(res, filename) {
+async function handleGetMeeting(res, filename, req) {
   try {
-    const safeName = filename.replace(/[^a-zA-Z0-9._-]/g, "");
+    const safeName = basename(filename.replace(/[^a-zA-Z0-9._-]/g, ""));
     const content = await storageRead(safeName);
 
-    // Try to also load the raw transcript
     const txtFile = safeName.replace("-summary.md", ".txt");
     let transcript = "";
     try {
       transcript = await storageRead(txtFile);
     } catch { /* no separate transcript file */ }
 
-    // Try to load structured insights JSON if present
     const insightsFile = safeName.replace("-summary.md", "-insights.json");
     let insights = null;
     try {
@@ -336,10 +485,73 @@ async function handleGetMeeting(res, filename) {
       insights = JSON.parse(raw);
     } catch { /* ok if not present */ }
 
-    jsonResponse(res, { content, transcript, file: safeName, insights });
+    jsonResponse(res, { content, transcript, file: safeName, insights }, 200, req);
   } catch (err) {
-    jsonResponse(res, { error: "Meeting not found" }, 404);
+    jsonResponse(res, { error: "Meeting not found" }, 404, req);
   }
+}
+
+async function handleRenameMeeting(req, res, filename) {
+  let body = "";
+  for await (const chunk of req) {
+    body += chunk;
+    if (body.length > MAX_BODY_SIZE) {
+      jsonResponse(res, { error: "Request body too large" }, 413, req);
+      return;
+    }
+  }
+
+  const { title } = JSON.parse(body);
+  if (!title || typeof title !== "string" || title.length > 200) {
+    jsonResponse(res, { error: "Title is required (max 200 chars)" }, 400, req);
+    return;
+  }
+
+  try {
+    const safeName = basename(filename.replace(/[^a-zA-Z0-9._-]/g, ""));
+    const content = await storageRead(safeName);
+    const updated = content.replace(/^# .+/m, `# ${title.trim()}`);
+    await storageSave(safeName, updated);
+    jsonResponse(res, { success: true, title: title.trim() }, 200, req);
+  } catch (err) {
+    jsonResponse(res, { error: "Meeting not found" }, 404, req);
+  }
+}
+
+// ─────────────────────────────────────────
+//  SSE endpoint for progress streaming
+// ─────────────────────────────────────────
+
+function handleSSE(req, res) {
+  res.writeHead(200, {
+    "Content-Type": "text/event-stream",
+    "Cache-Control": "no-cache",
+    "Connection": "keep-alive",
+    ...corsHeaders(req),
+  });
+
+  const send = (data) => {
+    res.write(`data: ${JSON.stringify(data)}\n\n`);
+  };
+
+  // Send all current progress entries
+  for (const [id, data] of progressStore.entries()) {
+    send({ sessionId: id, ...data });
+  }
+
+  // Poll for updates
+  const interval = setInterval(() => {
+    for (const [id, data] of progressStore.entries()) {
+      if (Date.now() - data.ts < 5000) {
+        send({ sessionId: id, ...data });
+      }
+    }
+  }, 1000);
+
+  req.on("close", () => {
+    clearInterval(interval);
+    res.end();
+  });
 }
 
 // ─────────────────────────────────────────
@@ -348,8 +560,14 @@ async function handleGetMeeting(res, filename) {
 
 const server = createServer(async (req, res) => {
   if (req.method === "OPTIONS") {
-    res.writeHead(204, corsHeaders());
+    res.writeHead(204, corsHeaders(req));
     res.end();
+    return;
+  }
+
+  // Auth check (skip for health and SSE)
+  if (!["/health", "/progress"].includes(req.url) && !authenticate(req)) {
+    jsonResponse(res, { error: "Unauthorized" }, 401, req);
     return;
   }
 
@@ -358,7 +576,7 @@ const server = createServer(async (req, res) => {
       await handleTranscribe(req, res);
 
     } else if (req.method === "GET" && req.url === "/meetings") {
-      await handleListMeetings(res);
+      await handleListMeetings(res, req);
 
     } else if (req.method === "GET" && req.url?.startsWith("/meeting/")) {
       const url = new URL(req.url, `http://localhost:${PORT}`);
@@ -367,7 +585,7 @@ const server = createServer(async (req, res) => {
 
       if (format === "txt" || format === "md") {
         try {
-          const safeName = filename.replace(/[^a-zA-Z0-9._-]/g, "");
+          const safeName = basename(filename.replace(/[^a-zA-Z0-9._-]/g, ""));
           const content = await storageRead(safeName);
           const txtFile = safeName.replace("-summary.md", ".txt");
           let transcript = "";
@@ -377,22 +595,26 @@ const server = createServer(async (req, res) => {
           res.writeHead(200, {
             "Content-Type": `${mime}; charset=utf-8`,
             "Content-Disposition": disposition,
-            ...corsHeaders(),
+            ...corsHeaders(req),
           });
           res.end(content + "\n\n---\n\n" + transcript);
         } catch {
-          jsonResponse(res, { error: "Meeting not found" }, 404);
+          jsonResponse(res, { error: "Meeting not found" }, 404, req);
         }
       } else {
-        await handleGetMeeting(res, filename);
+        await handleGetMeeting(res, filename, req);
       }
+
+    } else if (req.method === "PATCH" && req.url?.startsWith("/meeting/")) {
+      const url = new URL(req.url, `http://localhost:${PORT}`);
+      const filename = decodeURIComponent(url.pathname.split("/meeting/")[1]);
+      await handleRenameMeeting(req, res, filename);
 
     } else if (req.method === "DELETE" && req.url?.startsWith("/meeting/")) {
       const url = new URL(req.url, `http://localhost:${PORT}`);
       const filename = decodeURIComponent(url.pathname.split("/meeting/")[1]);
-      const safeName = filename.replace(/[^a-zA-Z0-9._-]/g, "");
+      const safeName = basename(filename.replace(/[^a-zA-Z0-9._-]/g, ""));
       const base = safeName.replace("-summary.md", "");
-      // Delete all related files
       const files = [
         `${base}-summary.md`,
         `${base}.txt`,
@@ -408,27 +630,31 @@ const server = createServer(async (req, res) => {
           console.error(`Failed to delete ${f}:`, e.message);
         }
       }
-      jsonResponse(res, { success: true, deleted });
+      jsonResponse(res, { success: true, deleted }, 200, req);
 
     } else if (req.method === "GET" && req.url === "/dashboard") {
       const dashPath = join(__dirname, "dashboard.html");
       const html = await readFile(dashPath, "utf-8");
-      res.writeHead(200, { "Content-Type": "text/html; charset=utf-8", ...corsHeaders() });
+      res.writeHead(200, { "Content-Type": "text/html; charset=utf-8", ...corsHeaders(req) });
       res.end(html);
 
+    } else if (req.method === "GET" && req.url === "/progress") {
+      handleSSE(req, res);
+
     } else if (req.method === "GET" && req.url === "/health") {
-      jsonResponse(res, { status: "ok", storage: IS_VERCEL ? "blob" : "local" });
+      jsonResponse(res, { status: "ok", storage: IS_VERCEL ? "blob" : "local" }, 200, req);
 
     } else {
-      jsonResponse(res, { error: "Not found" }, 404);
+      jsonResponse(res, { error: "Not found" }, 404, req);
     }
   } catch (err) {
     console.error("Error:", err);
-    jsonResponse(res, { error: err.message }, 500);
+    jsonResponse(res, { error: err.message }, 500, req);
   }
 });
 
 server.listen(PORT, () => {
   console.log(`\n  Meet Assistant Server running on http://localhost:${PORT}`);
-  console.log(`  Storage: ${IS_VERCEL ? "Vercel Blob" : `Local (${LOCAL_TRANSCRIPTIONS_DIR})`}\n`);
+  console.log(`  Storage: ${IS_VERCEL ? "Vercel Blob" : `Local (${LOCAL_TRANSCRIPTIONS_DIR})`}`);
+  console.log(`  Auth: ${API_KEY ? "API key enabled" : "Open (dev mode)"}\n`);
 });

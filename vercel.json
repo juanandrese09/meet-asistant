@@ -5,7 +5,8 @@
       "src": "server/server.js",
       "use": "@vercel/node",
       "config": {
-        "includeFiles": ["server/dashboard.html"]
+        "includeFiles": ["server/dashboard.html"],
+        "maxDuration": 120
       }
     }
   ],

@@ -9,11 +9,20 @@ const toast = document.getElementById("toast");
 const toastLabel = document.getElementById("toastLabel");
 const toastText = document.getElementById("toastText");
 const toastRetry = document.getElementById("toastRetry");
+const settingsBtn = document.getElementById("settingsBtn");
+const settingsPanel = document.getElementById("settingsPanel");
+const serverUrlInput = document.getElementById("serverUrlInput");
+const apiKeyInput = document.getElementById("apiKeyInput");
+const settingsSave = document.getElementById("settingsSave");
+const progressBar = document.getElementById("progressBar");
+const progressFill = document.getElementById("progressFill");
+const progressLabel = document.getElementById("progressLabel");
 
 let isRecording = false;
 let timerInterval = null;
 let recordingStartTime = null;
 let toastTimeout = null;
+let sseSource = null;
 
 const ICONS = {
   check: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>',
@@ -21,9 +30,85 @@ const ICONS = {
   info: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg>',
 };
 
+const PROGRESS_LABELS = {
+  uploading: "Subiendo audio...",
+  saving: "Guardando audio...",
+  transcribing: "Transcribiendo con Whisper...",
+  transcribed: "Transcripcion completa",
+  summarizing: "Generando resumen con AI...",
+  done: "Procesamiento completo",
+  error: "Error en el procesamiento",
+};
+
+// ── Settings
+function loadSettings() {
+  serverUrlInput.value = localStorage.getItem("ma_server_url") || "https://meet-asistant.vercel.app";
+  apiKeyInput.value = localStorage.getItem("ma_api_key") || "";
+}
+
+settingsBtn.addEventListener("click", () => {
+  settingsPanel.classList.toggle("show");
+});
+
+settingsSave.addEventListener("click", () => {
+  const url = serverUrlInput.value.replace(/\/+$/, "");
+  const key = apiKeyInput.value.trim();
+  if (url && /^https?:\/\//.test(url)) {
+    localStorage.setItem("ma_server_url", url);
+  }
+  if (key) {
+    localStorage.setItem("ma_api_key", key);
+  } else {
+    localStorage.removeItem("ma_api_key");
+  }
+  showToast("success", "Configuracion guardada", ICONS.check, { duration: 2000 });
+  settingsPanel.classList.remove("show");
+});
+
+loadSettings();
+
+// ── SSE progress streaming
+function connectSSE(sessionId) {
+  if (sseSource) { sseSource.close(); sseSource = null; }
+  const serverUrl = localStorage.getItem("ma_server_url") || "https://meet-asistant.vercel.app";
+  const apiKey = localStorage.getItem("ma_api_key") || "";
+  const url = `${serverUrl}/progress`;
+
+  sseSource = new EventSource(url);
+
+  sseSource.onmessage = (event) => {
+    try {
+      const data = JSON.parse(event.data);
+      if (data.sessionId && data.sessionId !== sessionId) return;
+
+      const label = PROGRESS_LABELS[data.status] || "Procesando...";
+      progressLabel.textContent = label;
+      progressFill.style.width = `${data.progress || 0}%`;
+
+      if (data.status === "done" || data.status === "error") {
+        setTimeout(() => {
+          if (sseSource) { sseSource.close(); sseSource = null; }
+          progressBar.classList.remove("show");
+        }, 1500);
+      }
+    } catch {}
+  };
+
+  sseSource.onerror = () => {
+    if (sseSource) { sseSource.close(); sseSource = null; }
+  };
+}
+
+function showProgress() {
+  progressBar.classList.add("show");
+  progressFill.style.width = "0%";
+  progressLabel.textContent = "Iniciando...";
+}
+
 // ── Dashboard button
 dashboardBtn.addEventListener("click", () => {
-  chrome.tabs.create({ url: "https://meet-asistant.vercel.app/dashboard" });
+  const serverUrl = localStorage.getItem("ma_server_url") || "https://meet-asistant.vercel.app";
+  chrome.tabs.create({ url: `${serverUrl}/dashboard` });
 });
 
 // ── Check recording state on open
@@ -49,14 +134,13 @@ async function startRecording() {
   hideToast();
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
 
-  // Allow any http(s) tab so users can test/record audio from any source
   if (!tab?.url || !/^https?:\/\//.test(tab.url)) {
-    showToast("error", "Abre una página web con audio (Meet, YouTube, etc.)", ICONS.error);
+    showToast("error", "Abre una pagina web con audio (Meet, YouTube, etc.)", ICONS.error);
     return;
   }
 
   btn.disabled = true;
-  setStatus("processing", "Iniciando captura de audio…");
+  setStatus("processing", "Iniciando captura de audio...");
 
   try {
     const streamId = await chrome.tabCapture.getMediaStreamId({
@@ -86,9 +170,9 @@ async function startRecording() {
 
 async function stopRecording() {
   btn.disabled = true;
-  btnText.textContent = "Procesando…";
-  setStatus("processing", "Deteniendo y transcribiendo…");
-  showToast("info", "Enviando audio al servidor. Esto puede tomar unos segundos…", ICONS.info, { persist: true });
+  btnText.textContent = "Procesando...";
+  setStatus("processing", "Deteniendo y transcribiendo...");
+  showProgress();
   stopTimer();
 
   chrome.runtime.sendMessage({ action: "stopRecording" }, (response) => {
@@ -96,8 +180,11 @@ async function stopRecording() {
     setRecordingUI(false);
 
     if (response?.success) {
+      if (response.sessionId) {
+        connectSSE(response.sessionId);
+      }
       const msg = response.summary
-        ? "Transcripción guardada. Abre el dashboard para ver los detalles."
+        ? "Transcripcion guardada. Abre el dashboard para ver los detalles."
         : response.message || "Listo";
       showToast("success", msg, ICONS.check, { duration: 6000 });
     } else {
@@ -106,11 +193,10 @@ async function stopRecording() {
         persist: true,
         retry: () => {
           hideToast();
-          // The audio was already sent — can't really retry the capture,
-          // but we can at least reset UI so user knows they can record again
           setStatus("idle", "Listo para grabar");
         },
       });
+      progressBar.classList.remove("show");
     }
   });
 }
@@ -119,13 +205,13 @@ async function stopRecording() {
 function setRecordingUI(recording) {
   isRecording = recording;
   if (recording) {
-    btnText.textContent = "Detener grabación";
+    btnText.textContent = "Detener grabacion";
     btn.classList.add("recording");
-    setStatus("recording", "Grabando audio de la reunión");
+    setStatus("recording", "Grabando audio de la reunion");
     timerEl.classList.add("show");
     startTimer();
   } else {
-    btnText.textContent = "Iniciar grabación";
+    btnText.textContent = "Iniciar grabacion";
     btn.classList.remove("recording");
     timerEl.classList.remove("show");
     setStatus("idle", "Listo para grabar");
@@ -173,9 +259,9 @@ function showToast(type, text, iconSvg, opts = {}) {
   }
   toast.className = `toast show ${type}`;
   toastLabel.innerHTML = (iconSvg || "") + " " + (
-    type === "success" ? "Éxito" :
+    type === "success" ? "Exito" :
     type === "error"   ? "Error" :
-                         "Info"
+                          "Info"
   );
   toastText.textContent = text;
 

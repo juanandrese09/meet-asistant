@@ -13,6 +13,18 @@ chrome.runtime.onMessage.addListener((message) => {
   }
 });
 
+async function getServerConfig() {
+  try {
+    const data = await chrome.storage.local.get(["ma_server_url", "ma_api_key"]);
+    return {
+      serverUrl: data.ma_server_url || "https://meet-asistant.vercel.app",
+      apiKey: data.ma_api_key || "",
+    };
+  } catch {
+    return { serverUrl: "https://meet-asistant.vercel.app", apiKey: "" };
+  }
+}
+
 async function startRecording(streamId) {
   try {
     const stream = await navigator.mediaDevices.getUserMedia({
@@ -27,7 +39,7 @@ async function startRecording(streamId) {
     capturedStream = stream;
     recordedChunks = [];
 
-    // ⚠️ CRITICAL: when Chrome's tabCapture grabs audio via getUserMedia,
+    // CRITICAL: when Chrome's tabCapture grabs audio via getUserMedia,
     // it REDIRECTS the audio stream away from the speakers (muting the tab
     // for the user). We must re-pipe it back through AudioContext so the
     // user keeps hearing the meeting while we record it.
@@ -80,6 +92,33 @@ function cleanup() {
   }
 }
 
+async function sendAudioToServer(blob) {
+  const { serverUrl, apiKey } = await getServerConfig();
+
+  const formData = new FormData();
+  formData.append("audio", blob, "meeting.webm");
+  formData.append("timestamp", new Date().toISOString());
+  formData.append("tzOffsetMinutes", String(new Date().getTimezoneOffset()));
+
+  const headers = {};
+  if (apiKey) {
+    headers["x-api-key"] = apiKey;
+  }
+
+  const response = await fetch(`${serverUrl}/transcribe`, {
+    method: "POST",
+    headers,
+    body: formData,
+  });
+
+  if (!response.ok) {
+    const text = await response.text();
+    throw new Error(`Server error ${response.status}: ${text}`);
+  }
+
+  return await response.json();
+}
+
 function stopRecording() {
   if (!mediaRecorder || mediaRecorder.state === "inactive") {
     chrome.runtime.sendMessage({
@@ -92,12 +131,11 @@ function stopRecording() {
   }
 
   mediaRecorder.onstop = async () => {
-    // Validate we have actual audio content
     if (!recordedChunks.length) {
       chrome.runtime.sendMessage({
         action: "offscreen-stopped",
         audioBase64: null,
-        error: "No se capturó audio — verifica que la pestaña tenga sonido",
+        error: "No se capturo audio - verifica que la pestana tenga sonido",
       });
       cleanup();
       return;
@@ -109,33 +147,32 @@ function stopRecording() {
       chrome.runtime.sendMessage({
         action: "offscreen-stopped",
         audioBase64: null,
-        error: `Audio muy corto (${blob.size} bytes) — la grabación fue demasiado breve`,
+        error: `Audio muy corto (${blob.size} bytes) - la grabacion fue demasiado breve`,
       });
       cleanup();
       return;
     }
 
-    const reader = new FileReader();
-    reader.onloadend = () => {
-      const base64 = reader.result.split(",")[1];
-      chrome.runtime.sendMessage({
-        action: "offscreen-stopped",
-        audioBase64: base64,
-        sizeBytes: blob.size,
-      });
-      cleanup();
-    };
-    reader.onerror = () => {
+    try {
+      const result = await sendAudioToServer(blob);
       chrome.runtime.sendMessage({
         action: "offscreen-stopped",
         audioBase64: null,
-        error: "Error leyendo el audio grabado",
+        serverResult: result,
+        sizeBytes: blob.size,
       });
-      cleanup();
-    };
-    reader.readAsDataURL(blob);
+    } catch (err) {
+      console.error("Offscreen: server upload failed:", err);
+      chrome.runtime.sendMessage({
+        action: "offscreen-stopped",
+        audioBase64: null,
+        error: `Error enviando al servidor: ${err.message}`,
+      });
+    }
+
+    cleanup();
   };
 
   mediaRecorder.stop();
-  console.log("Offscreen: recording stopped, processing...");
+  console.log("Offscreen: recording stopped, uploading...");
 }
