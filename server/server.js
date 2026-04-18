@@ -565,8 +565,8 @@ const server = createServer(async (req, res) => {
     return;
   }
 
-  // Auth check (skip for health and SSE)
-  if (!["/health", "/progress"].includes(req.url) && !authenticate(req)) {
+  // Auth check (skip for health, SSE, and dashboard HTML)
+  if (!["/health", "/progress", "/dashboard"].includes(req.url) && !authenticate(req)) {
     jsonResponse(res, { error: "Unauthorized" }, 401, req);
     return;
   }
