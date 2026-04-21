@@ -75,33 +75,35 @@ loadSettings();
 // ── SSE progress streaming
 function connectSSE(sessionId) {
   if (sseSource) { sseSource.close(); sseSource = null; }
-  const serverUrl = localStorage.getItem("ma_server_url") || "https://meet-asistant.vercel.app";
-  const apiKey = localStorage.getItem("ma_api_key") || "";
-  const url = `${serverUrl}/progress`;
+  chrome.storage.local.get(["ma_server_url", "ma_api_key"], (data) => {
+    const serverUrl = data.ma_server_url || "https://meet-asistant.vercel.app";
+    const apiKey = data.ma_api_key || "";
+    const url = `${serverUrl}/progress`;
 
-  sseSource = new EventSource(url);
+    sseSource = new EventSource(url);
 
-  sseSource.onmessage = (event) => {
-    try {
-      const data = JSON.parse(event.data);
-      if (data.sessionId && data.sessionId !== sessionId) return;
+    sseSource.onmessage = (event) => {
+      try {
+        const parsed = JSON.parse(event.data);
+        if (parsed.sessionId && parsed.sessionId !== sessionId) return;
 
-      const label = PROGRESS_LABELS[data.status] || "Procesando...";
-      progressLabel.textContent = label;
-      progressFill.style.width = `${data.progress || 0}%`;
+        const label = PROGRESS_LABELS[parsed.status] || "Procesando...";
+        progressLabel.textContent = label;
+        progressFill.style.width = `${parsed.progress || 0}%`;
 
-      if (data.status === "done" || data.status === "error") {
-        setTimeout(() => {
-          if (sseSource) { sseSource.close(); sseSource = null; }
-          progressBar.classList.remove("show");
-        }, 1500);
-      }
-    } catch {}
-  };
+        if (parsed.status === "done" || parsed.status === "error") {
+          setTimeout(() => {
+            if (sseSource) { sseSource.close(); sseSource = null; }
+            progressBar.classList.remove("show");
+          }, 1500);
+        }
+      } catch {}
+    };
 
-  sseSource.onerror = () => {
-    if (sseSource) { sseSource.close(); sseSource = null; }
-  };
+    sseSource.onerror = () => {
+      if (sseSource) { sseSource.close(); sseSource = null; }
+    };
+  });
 }
 
 function showProgress() {
@@ -112,8 +114,10 @@ function showProgress() {
 
 // ── Dashboard button
 dashboardBtn.addEventListener("click", () => {
-  const serverUrl = localStorage.getItem("ma_server_url") || "https://meet-asistant.vercel.app";
-  chrome.tabs.create({ url: `${serverUrl}/dashboard` });
+  chrome.storage.local.get(["ma_server_url"], (data) => {
+    const serverUrl = data.ma_server_url || "https://meet-asistant.vercel.app";
+    chrome.tabs.create({ url: `${serverUrl}/dashboard` });
+  });
 });
 
 // ── Check recording state on open
