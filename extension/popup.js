@@ -42,8 +42,10 @@ const PROGRESS_LABELS = {
 
 // ── Settings
 function loadSettings() {
-  serverUrlInput.value = localStorage.getItem("ma_server_url") || "https://meet-asistant.vercel.app";
-  apiKeyInput.value = localStorage.getItem("ma_api_key") || "";
+  chrome.storage.local.get(["ma_server_url", "ma_api_key"], (data) => {
+    serverUrlInput.value = data.ma_server_url || "https://meet-asistant.vercel.app";
+    apiKeyInput.value = data.ma_api_key || "";
+  });
 }
 
 settingsBtn.addEventListener("click", () => {
@@ -53,16 +55,19 @@ settingsBtn.addEventListener("click", () => {
 settingsSave.addEventListener("click", () => {
   const url = serverUrlInput.value.replace(/\/+$/, "");
   const key = apiKeyInput.value.trim();
+  const settings = {};
   if (url && /^https?:\/\//.test(url)) {
-    localStorage.setItem("ma_server_url", url);
+    settings.ma_server_url = url;
   }
   if (key) {
-    localStorage.setItem("ma_api_key", key);
+    settings.ma_api_key = key;
   } else {
-    localStorage.removeItem("ma_api_key");
+    settings.ma_api_key = "";
   }
-  showToast("success", "Configuracion guardada", ICONS.check, { duration: 2000 });
-  settingsPanel.classList.remove("show");
+  chrome.storage.local.set(settings, () => {
+    showToast("success", "Configuracion guardada", ICONS.check, { duration: 2000 });
+    settingsPanel.classList.remove("show");
+  });
 });
 
 loadSettings();
