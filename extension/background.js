@@ -2,12 +2,16 @@ let stopTimeout = null;
 
 const DEFAULT_SERVER_URL = "https://meet-asistant.vercel.app";
 
-function getServerUrl() {
-  return localStorage.getItem("ma_server_url") || DEFAULT_SERVER_URL;
-}
-
-function getApiKey() {
-  return localStorage.getItem("ma_api_key") || "";
+async function getServerConfig() {
+  try {
+    const data = await chrome.storage.local.get(["ma_server_url", "ma_api_key"]);
+    return {
+      serverUrl: data.ma_server_url || DEFAULT_SERVER_URL,
+      apiKey: data.ma_api_key || "",
+    };
+  } catch {
+    return { serverUrl: DEFAULT_SERVER_URL, apiKey: "" };
+  }
 }
 
 async function getRecordingState() {
@@ -83,9 +87,11 @@ async function handleStartRecording(tabId, streamId) {
 }
 
 async function handleStopRecording() {
-  const state = await getRecordingState();
-  if (!state.recording) throw new Error("No se está grabando");
+  if (!await getRecordingState().then(s => s.recording)) {
+    throw new Error("No se está grabando");
+  }
 
+  const state = await getRecordingState();
   const startTime = state.startTime;
   const activeTabId = state.activeTabId;
 
@@ -106,7 +112,15 @@ async function handleStopRecording() {
           chrome.tabs.sendMessage(activeTabId, { action: "recordingStopped" }).catch(() => {});
         }
 
-        if (message.audioBase64) {
+        if (message.serverResult) {
+          // Offscreen document already uploaded via FormData
+          resolve({
+            message: message.serverResult.message || "Transcripcion guardada",
+            summary: message.serverResult.summary || "",
+            sessionId: message.serverResult.sessionId || null,
+          });
+        } else if (message.audioBase64) {
+          // Fallback: background.js uploads the base64 audio
           const durationMs = startTime ? Date.now() - startTime : null;
           sendToServer(message.audioBase64, durationMs).then(resolve).catch(reject);
         } else {
@@ -130,16 +144,16 @@ async function handleStopRecording() {
 async function sendToServer(base64Audio, durationMs) {
   const MAX_ATTEMPTS = 3;
   let lastError;
+  const { serverUrl, apiKey } = await getServerConfig();
 
   for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
     try {
       const headers = { "Content-Type": "application/json" };
-      const apiKey = getApiKey();
       if (apiKey) {
         headers["x-api-key"] = apiKey;
       }
 
-      const response = await fetch(`${getServerUrl()}/transcribe`, {
+      const response = await fetch(`${serverUrl}/transcribe`, {
         method: "POST",
         headers,
         body: JSON.stringify({
